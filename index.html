@@ -470,7 +470,17 @@ button:disabled{opacity:.45;cursor:not-allowed}
     const out = await PDFDocument.create();
     const font = await out.embedFont(StandardFonts.Helvetica);
     const nSrc = srcDoc.getPageCount();
-    const embedded = await out.embedPdf(srcDoc, [...Array(nSrc).keys()]);
+    // Páginas sin /Contents (vacías): pdf-lib no puede incrustarlas; se tratan como en blanco.
+    const valid = [], slot = new Array(nSrc).fill(-1);
+    const emptyPages = [];
+    for (let i = 0; i < nSrc; i++) {
+      let c;
+      try { c = srcDoc.getPage(i).node.Contents(); } catch (_) { c = undefined; }
+      const empty = !c || (c.size && c.size() === 0 && !c.asBytes);
+      if (empty) emptyPages.push(i + 1); else { slot[i] = valid.length; valid.push(i); }
+    }
+    const embList = valid.length ? await out.embedPdf(srcDoc, valid) : [];
+    const embedded = new Proxy([], { get: (_, k) => (/^\d+$/.test(k) ? (slot[k] >= 0 ? embList[slot[k]] : null) : undefined) });
 
     const geo = plan.geometry;
     const SWp = pt(geo.SW), SHp = pt(geo.SH);
@@ -485,6 +495,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     function drawCell(page, cell) {
       if (cell.page === null || cell.page === undefined) return;
       const ep = embedded[cell.page];
+      if (!ep) return; // página vacía en el original
       const ptw = ep.width - 2 * sbPt, pth = ep.height - 2 * sbPt;
       let s = Math.min(twPt / ptw, thPt / pth);
       if (Math.abs(s - 1) < 1e-3) s = 1;
@@ -564,6 +575,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
       if (onProgress && done % 5 === 0) { onProgress(done / jobs.length); await new Promise((r) => setTimeout(r, 0)); }
     }
     out.setTitle(`${fileName} (impuesto)`);
+    generate.lastEmpty = emptyPages;
     out.setProducer('Imposición de preprensa');
     return out.save();
   }
@@ -780,7 +792,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
         setTimeout(() => URL.revokeObjectURL(a.href), 20000);
       }
       const a = { download: fname };
-      $('note').innerHTML = `<b>Listo.</b> Se descargó <code>${esc(a.download)}</code> (${(bytes.length / 1024).toFixed(0)} KB, ${p.stats.outputPages} páginas).`;
+      const ep = ImpoPdf.generate.lastEmpty || [];
+      $('note').innerHTML = (ep.length ? `<b>Aviso:</b> ${ep.length} página(s) del original están vacías y quedaron en blanco (${ep.slice(0, 12).join(', ')}${ep.length > 12 ? '…' : ''}). ` : '') + `<b>Listo.</b> Se descargó <code>${esc(a.download)}</code> (${(bytes.length / 1024).toFixed(0)} KB, ${p.stats.outputPages} páginas).`;
     } catch (e) {
       $('warns').innerHTML = e && e.code === 'declined' ? '<li>Cancelaste la descarga. Podés volver a intentarlo.</li>' : `<li>No se pudo generar el PDF: ${esc((e && e.message) || e)}</li>`;
     } finally {
